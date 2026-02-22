@@ -1,0 +1,10 @@
+[Unit]
+Description=OpenClaw gateway emergency recovery watchdog
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME=%h
+Environment=PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.openclaw/bin/watchdog.sh

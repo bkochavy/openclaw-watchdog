@@ -1,0 +1,16 @@
+{
+  "health_url": "http://127.0.0.1:18789",
+  "telegram_bot_token_env": "TELEGRAM_BOT_TOKEN_AVA",
+  "telegram_chat_id": "",
+  "max_failures": 2,
+  "cooldown_seconds": 1800,
+  "max_repairs_per_incident": 3,
+  "codex_timeout_seconds": 180,
+  "rescue_command_timeout_seconds": 420,
+  "rescue_command_prefix": "/codex",
+  "recovery_log": "~/.openclaw/workspace/memory/recovery-log.md",
+  "state_file": "/tmp/openclaw-watchdog-state",
+  "lock_file": "/tmp/openclaw-watchdog.lock",
+  "codex_model": "gpt-5.3-codex",
+  "codex_bin": ""
+}
