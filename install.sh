@@ -8,6 +8,7 @@ BIN_DIR="$OPENCLAW_HOME/bin"
 CONFIG_PATH="${OPENCLAW_WATCHDOG_CONFIG:-$OPENCLAW_HOME/watchdog.json}"
 LAUNCHD_DEST="$HOME/Library/LaunchAgents/ai.openclaw.watchdog.plist"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+TMP_REPO=""
 
 SETUP_ONLY=0
 QUIET_MODE=0
@@ -60,6 +61,32 @@ parse_args() {
     esac
     shift
   done
+}
+
+cleanup_tmp_repo() {
+  if [ -n "$TMP_REPO" ] && [ -d "$TMP_REPO" ]; then
+    rm -rf "$TMP_REPO"
+  fi
+}
+
+fetch_if_needed() {
+  if [ -f "$SCRIPT_DIR/scripts/watchdog.sh" ]; then
+    return 0
+  fi
+
+  require_cmd curl
+  require_cmd tar
+
+  TMP_REPO=$(mktemp -d)
+  trap cleanup_tmp_repo EXIT
+
+  curl -fsSL "https://codeload.github.com/bkochavy/openclaw-watchdog/tar.gz/main" | tar -xz -C "$TMP_REPO"
+
+  SCRIPT_DIR="$(find "$TMP_REPO" -maxdepth 1 -type d -name 'openclaw-watchdog-*' | head -1)"
+  if [ -z "$SCRIPT_DIR" ] || [ ! -f "$SCRIPT_DIR/scripts/watchdog.sh" ]; then
+    echo "install: failed to fetch watchdog scripts from GitHub" >&2
+    exit 1
+  fi
 }
 
 install_scripts() {
@@ -133,7 +160,7 @@ else:
         max_failures = max_failures_default
 
     print("")
-    print(f"Preview: After {max_failures} failures (~{max_failures * 5} min), Codex will attempt repair and notify chat ID {chat_id}.")
+    print(f"Preview: After {max_failures} failures (~{max_failures * 5} min), the coding agent will attempt repair and notify chat ID {chat_id}.")
     confirm = input("Confirm and write config? [y/N]: ").strip().lower()
     if confirm not in {"y", "yes"}:
         print("Setup canceled.")
@@ -153,7 +180,8 @@ config = {
     "state_file": "/tmp/openclaw-watchdog-state",
     "lock_file": "/tmp/openclaw-watchdog.lock",
     "codex_model": "gpt-5.3-codex",
-    "codex_bin": ""
+    "codex_bin": "",
+    "claude_bin": ""
 }
 
 config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -256,12 +284,17 @@ check_install() {
 main() {
   parse_args "$@"
 
+  if [ "$QUIET_MODE" -eq 0 ] && [ -n "${OPENCLAW_WATCHDOG_CHAT_ID:-}" ]; then
+    QUIET_MODE=1
+  fi
+
   if [ "$CHECK_ONLY" -eq 1 ]; then
     check_install
     log "Install check passed."
     exit 0
   fi
 
+  fetch_if_needed
   install_scripts
 
   if [ "$SETUP_ONLY" -eq 1 ] || [ ! -f "$CONFIG_PATH" ]; then

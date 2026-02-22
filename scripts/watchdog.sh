@@ -23,6 +23,7 @@ STATE_FILE="/tmp/openclaw-watchdog-state"
 LOCK_FILE="/tmp/openclaw-watchdog.lock"
 CODEX_MODEL="gpt-5.3-codex"
 CODEX_BIN=""
+CLAUDE_BIN=""
 RESCUE_OFFSET_FILE="/tmp/openclaw-watchdog-rescue-offset"
 TIMEOUT_WARN_FILE="/tmp/openclaw-watchdog-timeout.warned"
 
@@ -131,6 +132,7 @@ load_config() {
   LOCK_FILE=$(expand_path "$(config_get_string "lock_file" "$LOCK_FILE")")
   CODEX_MODEL=$(config_get_string "codex_model" "$CODEX_MODEL")
   CODEX_BIN=$(expand_path "$(config_get_string "codex_bin" "$CODEX_BIN")")
+  CLAUDE_BIN=$(expand_path "$(config_get_string "claude_bin" "$CLAUDE_BIN")")
 
   # Optional advanced keys for state/cooldown artifacts.
   RESCUE_OFFSET_FILE=$(expand_path "$(config_get_string "rescue_offset_file" "$RESCUE_OFFSET_FILE")")
@@ -141,27 +143,45 @@ load_config() {
   TG_HELPER="${TMPDIR:-/tmp}/openclaw-tg-helper.sh"
 }
 
-resolve_codex_bin() {
+resolve_coding_agent() {
+  # 1. Try configured codex_bin
   if [ -n "$CODEX_BIN" ] && [ -x "$CODEX_BIN" ]; then
-    echo "$CODEX_BIN"
+    echo "codex:$CODEX_BIN"
     return 0
   fi
 
+  # 2. Try codex on PATH
   if command -v codex >/dev/null 2>&1; then
-    command -v codex
+    echo "codex:$(command -v codex)"
     return 0
   fi
 
-  if [ -x /opt/homebrew/bin/codex ]; then
-    echo "/opt/homebrew/bin/codex"
+  # 3. Try common codex paths
+  for p in /opt/homebrew/bin/codex /usr/local/bin/codex; do
+    if [ -x "$p" ]; then
+      echo "codex:$p"
+      return 0
+    fi
+  done
+
+  # 4. Try configured claude_bin first, then PATH/common paths
+  if [ -n "$CLAUDE_BIN" ] && [ -x "$CLAUDE_BIN" ]; then
+    echo "claude:$CLAUDE_BIN"
     return 0
   fi
-
-  if [ -x /usr/local/bin/codex ]; then
-    echo "/usr/local/bin/codex"
+  if command -v claude >/dev/null 2>&1; then
+    echo "claude:$(command -v claude)"
     return 0
   fi
+  for p in /opt/homebrew/bin/claude /usr/local/bin/claude; do
+    if [ -x "$p" ]; then
+      echo "claude:$p"
+      return 0
+    fi
+  done
 
+  # 5. Nothing found
+  echo "none:"
   return 1
 }
 
@@ -222,6 +242,41 @@ notify_telegram_codex() {
   local msg="$1"
   notify_telegram "${msg}
 ${CODEX_RECOV_SUFFIX}"
+}
+
+notify_no_agent_found() {
+  notify_telegram "🚨 No coding agent found (Codex or Claude Code).
+Install one to enable auto-repair:
+  npm install -g @openai/codex    # Codex
+  npm install -g @anthropic-ai/claude-code  # Claude Code
+
+Then restart the watchdog: bash ~/.openclaw/bin/watchdog.sh"
+}
+
+run_coding_agent_prompt() {
+  local agent_type="$1"
+  local agent_bin="$2"
+  local timeout_seconds="$3"
+  local prompt="$4"
+
+  case "$agent_type" in
+    codex)
+      run_with_timeout "$timeout_seconds" "$agent_bin" \
+        --dangerously-bypass-approvals-and-sandbox \
+        --model "$CODEX_MODEL" \
+        "$prompt"
+      return $?
+      ;;
+    claude)
+      run_with_timeout "$timeout_seconds" "$agent_bin" \
+        --dangerously-skip-permissions \
+        "$prompt"
+      return $?
+      ;;
+    *)
+      return 127
+      ;;
+  esac
 }
 
 resolve_timeout_bin() {
@@ -525,7 +580,23 @@ run_watchdog() {
     notify_telegram "🔴 *Gateway down for ~${threshold_minutes} minutes.* Service manager couldn't auto-restart it. Launching Codex CLI to diagnose and repair..."
   fi
 
-  CODEX_BIN="$(resolve_codex_bin 2>/dev/null || true)"
+  local coding_agent agent_type agent_bin agent_label
+  coding_agent="$(resolve_coding_agent 2>/dev/null || true)"
+  agent_type="${coding_agent%%:*}"
+  agent_bin="${coding_agent#*:}"
+  case "$agent_type" in
+    codex)
+      agent_label="Codex"
+      ;;
+    claude)
+      agent_label="Claude Code"
+      ;;
+    *)
+      agent_type="none"
+      agent_bin=""
+      agent_label="coding agent"
+      ;;
+  esac
 
   if [ "$REPAIRS_THIS_INCIDENT" -ge "$MAX_REPAIRS_PER_INCIDENT" ]; then
     if [ "$RESCUE_ANNOUNCED" -eq 0 ]; then
@@ -541,7 +612,7 @@ Examples:
 \`$RESCUE_COMMAND_PREFIX run doctor and summarize\`
 \`$RESCUE_COMMAND_PREFIX inspect gateway.err.log and fix startup crash\`
 
-I will route each command to Codex while the gateway is down."
+I will route each command to the configured coding agent while the gateway is down."
       RESCUE_ANNOUNCED=1
       write_state
       return 0
@@ -559,7 +630,7 @@ I will route each command to Codex while the gateway is down."
     codex_log_file="$LOG_DIR/watchdog-codex-rescue-${attempt_stamp}.log"
 
     log "Rescue command received: $rescue_cmd"
-    notify_telegram_codex "🛠️ Running rescue command via Codex: \`${rescue_cmd}\`"
+    notify_telegram_codex "🛠️ Running rescue command via ${agent_label}: \`${rescue_cmd}\`"
 
     rescue_prompt="OpenClaw gateway is still down after ${MAX_REPAIRS_PER_INCIDENT} auto-attempts.
 
@@ -578,14 +649,12 @@ Rules:
 - Do not modify SOUL.md, USER.md, AGENTS.md, MEMORY.md, memory/*.md.
 - Log exact diagnosis + actions + result in output."
 
-    if [ -z "$CODEX_BIN" ] || [ ! -x "$CODEX_BIN" ]; then
-      repair_output="codex binary missing; set codex_bin in config or ensure codex is on PATH"
+    if [ "$agent_type" = "none" ] || [ -z "$agent_bin" ] || [ ! -x "$agent_bin" ]; then
+      repair_output="no coding agent found; install Codex or Claude Code"
       repair_exit=127
+      notify_no_agent_found
     else
-      repair_output=$(run_with_timeout "$RESCUE_CODEX_TIMEOUT" "$CODEX_BIN" \
-        --dangerously-bypass-approvals-and-sandbox \
-        --model "$CODEX_MODEL" \
-        "$rescue_prompt" 2>&1)
+      repair_output=$(run_coding_agent_prompt "$agent_type" "$agent_bin" "$RESCUE_CODEX_TIMEOUT" "$rescue_prompt" 2>&1)
       repair_exit=$?
     fi
 
@@ -633,7 +702,7 @@ Rules:
   attempt_stamp=$(date -u +"%Y%m%dT%H%M%SZ")
   codex_log_file="$LOG_DIR/watchdog-codex-attempt-${attempt_num}-${attempt_stamp}.log"
 
-  log "Launching Codex repair attempt #$attempt_num"
+  log "Launching ${agent_label} repair attempt #$attempt_num"
 
   repair_prompt="OpenClaw gateway has been unresponsive for 10+ minutes and hasn't self-recovered.
 
@@ -693,14 +762,12 @@ When done, append to ${RECOVERY_LOG}:
 
 Then: tg_send \"[✅ or ❌] Repair #${attempt_num} complete. [1-line summary]\""
 
-  if [ -z "$CODEX_BIN" ] || [ ! -x "$CODEX_BIN" ]; then
-    repair_output="codex binary missing; set codex_bin in config or ensure codex is on PATH"
+  if [ "$agent_type" = "none" ] || [ -z "$agent_bin" ] || [ ! -x "$agent_bin" ]; then
+    repair_output="no coding agent found; install Codex or Claude Code"
     repair_exit=127
+    notify_no_agent_found
   else
-    repair_output=$(run_with_timeout "$CODEX_TIMEOUT" "$CODEX_BIN" \
-      --dangerously-bypass-approvals-and-sandbox \
-      --model "$CODEX_MODEL" \
-      "$repair_prompt" 2>&1)
+    repair_output=$(run_coding_agent_prompt "$agent_type" "$agent_bin" "$CODEX_TIMEOUT" "$repair_prompt" 2>&1)
     repair_exit=$?
   fi
 

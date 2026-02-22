@@ -12,5 +12,6 @@
   "state_file": "/tmp/openclaw-watchdog-state",
   "lock_file": "/tmp/openclaw-watchdog.lock",
   "codex_model": "gpt-5.3-codex",
-  "codex_bin": ""
+  "codex_bin": "",
+  "claude_bin": ""
 }

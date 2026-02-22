@@ -1,3 +1,17 @@
+# openclaw-watchdog
+
+> OpenClaw gateway goes down. This catches it in 10 minutes and repairs it automatically.
+
+OpenClaw's process manager will try to restart the gateway. Sometimes it can't — bad config,
+port conflict, broken update. This watchdog catches that, sends you a Telegram alert, and
+launches Codex CLI to diagnose and fix it. If Codex can't fix it after 3 attempts, you get
+a rescue mode where you reply directly with instructions.
+
+Built and battle-tested on a Mac Mini running OpenClaw 24/7.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![OpenClaw](https://img.shields.io/badge/OpenClaw-compatible-orange)](https://openclaw.ai)
+
 ## 👤 For Humans
 
 ### The problem
@@ -13,10 +27,22 @@ OpenClaw gateway can crash hard enough that the service manager cannot recover i
 
 ### Install
 ```bash
-git clone https://github.com/<your-org>/openclaw-watchdog.git
+# Option 1: one-liner
+OPENCLAW_WATCHDOG_CHAT_ID=YOUR_TELEGRAM_CHAT_ID \
+  curl -fsSL https://raw.githubusercontent.com/bkochavy/openclaw-watchdog/main/install.sh | bash
+
+# Option 2: clone and run
+git clone https://github.com/bkochavy/openclaw-watchdog.git
 cd openclaw-watchdog
 ./install.sh --setup
 ```
+
+> **Note on channels:** Notifications require a Telegram bot token because the watchdog
+> must operate independently of OpenClaw (which may be down). Discord/iMessage/Signal
+> notifications require OpenClaw to be running, which defeats the purpose.
+> Rescue mode (`/codex` commands) is Telegram-only by design.
+> If you don't use Telegram, notifications are silently skipped — the watchdog still
+> repairs, it just won't alert you.
 
 ### Reading alerts
 - `🔴` down alert: threshold reached, Codex repair cycle starting

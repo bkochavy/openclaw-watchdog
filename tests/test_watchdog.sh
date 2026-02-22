@@ -108,7 +108,8 @@ write_config() {
   "state_file": "$state_file",
   "lock_file": "$lock_file",
   "codex_model": "gpt-5.3-codex",
-  "codex_bin": ""
+  "codex_bin": "",
+  "claude_bin": ""
 }
 EOFCONF
 }
