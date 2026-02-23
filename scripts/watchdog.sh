@@ -709,7 +709,7 @@ Rules:
 
   log "Launching ${agent_label} repair attempt #$attempt_num"
 
-  repair_prompt="OpenClaw gateway has been unresponsive for 10+ minutes and hasn't self-recovered.
+  repair_prompt="OpenClaw gateway has been unresponsive for ~${threshold_minutes}+ minutes and hasn't self-recovered.
 
 You have Telegram helper functions. Source them first:
 export OPENCLAW_HOME=\"${OPENCLAW_HOME}\"

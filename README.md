@@ -21,7 +21,7 @@ Works on any [OpenClaw](https://openclaw.ai) install — macOS and Linux.
 curl -fsSL https://raw.githubusercontent.com/bkochavy/openclaw-watchdog/main/install.sh | bash
 ```
 
-The installer runs a setup wizard that asks for your Telegram chat ID and configures the system scheduler (launchd on macOS, systemd on Linux). Health checks start immediately — every 5 minutes.
+The installer runs a setup wizard that asks for your Telegram chat ID and configures the system scheduler (launchd on macOS, systemd on Linux). Health checks start at load on macOS, within ~2 minutes on Linux, then continue every 5 minutes.
 
 > **Don't use Telegram?** That's fine. Skip the chat ID and the watchdog still auto-repairs, it just won't alert you.
 
@@ -44,6 +44,7 @@ OPENCLAW_WATCHDOG_CHAT_ID=123456789 ./install.sh --quiet
 
 | Dependency | Purpose | Install |
 |---|---|---|
+| `openclaw` | gateway runtime + CLI used by repairs | `curl -fsSL https://openclaw.ai/install.sh | bash` |
 | `bash`, `curl` | runtime + health checks | pre-installed on macOS/Linux |
 | `jq` | config & Telegram API parsing | `brew install jq` / `apt install jq` |
 | `python3` | setup wizard + timeout fallback | `brew install python3` / `apt install python3` |
@@ -102,16 +103,21 @@ After install, settings live in `~/.openclaw/watchdog.json`:
 
 ```jsonc
 {
-  "health_url": "http://127.0.0.1:18789",   // gateway health endpoint
+  "health_url": "http://127.0.0.1:18789", // gateway health endpoint
   "telegram_bot_token_env": "TELEGRAM_BOT_TOKEN_AVA", // env var holding your bot token
-  "telegram_chat_id": "123456789",           // your Telegram chat ID
-  "max_failures": 2,                         // consecutive failures before repair (2 = ~10 min)
-  "cooldown_seconds": 1800,                  // wait between repair attempts
-  "max_repairs_per_incident": 3,             // attempts before rescue mode
-  "codex_timeout_seconds": 180,              // per-attempt timeout
-  "codex_model": "gpt-5.3-codex",           // model for Codex repairs
-  "codex_bin": "",                           // explicit path to codex (auto-detected if empty)
-  "claude_bin": ""                           // explicit path to claude (auto-detected if empty)
+  "telegram_chat_id": "123456789", // your Telegram chat ID
+  "max_failures": 2, // consecutive failures before repair (2 = ~10 min)
+  "cooldown_seconds": 1800, // wait between repair attempts
+  "max_repairs_per_incident": 3, // attempts before rescue mode
+  "codex_timeout_seconds": 180, // per-attempt timeout
+  "rescue_command_timeout_seconds": 420, // timeout for rescue-mode commands
+  "rescue_command_prefix": "/codex", // command prefix watched in Telegram
+  "recovery_log": "~/.openclaw/workspace/memory/recovery-log.md", // markdown journal
+  "state_file": "/tmp/openclaw-watchdog-state", // runtime incident state
+  "lock_file": "/tmp/openclaw-watchdog.lock", // overlapping-run lock
+  "codex_model": "gpt-5.3-codex", // model for Codex repairs
+  "codex_bin": "", // explicit path to codex (auto-detected if empty)
+  "claude_bin": "" // explicit path to claude (auto-detected if empty)
 }
 ```
 
@@ -125,7 +131,7 @@ After install, settings live in `~/.openclaw/watchdog.json`:
 
 ## Why Telegram?
 
-The watchdog needs to reach you when OpenClaw is down. Discord, iMessage, and Signal notifications all route through the OpenClaw gateway — the thing that's broken. Telegram's Bot API is a direct HTTP call that works independently.
+The watchdog needs to reach you when OpenClaw is down. WhatsApp, Discord, iMessage, Signal, and Slack traffic normally routes through the OpenClaw gateway — the thing that's broken. This watchdog calls Telegram Bot API directly at `https://api.telegram.org`, so alerts and rescue commands still work during gateway outages.
 
 If you don't use Telegram, the watchdog still auto-repairs. You just won't get alerts.
 
@@ -161,6 +167,10 @@ Or clone the repo and run `./uninstall.sh` if you used the one-liner install.
 ### Install (non-interactive)
 
 ```bash
+# OpenClaw prerequisite (official installer)
+curl -fsSL https://openclaw.ai/install.sh | bash
+
+# Watchdog install
 OPENCLAW_WATCHDOG_CHAT_ID="${TELEGRAM_CHAT_ID}" \
   curl -fsSL https://raw.githubusercontent.com/bkochavy/openclaw-watchdog/main/install.sh | bash
 ```
@@ -180,7 +190,9 @@ launchctl list | grep watchdog
 systemctl --user status openclaw-watchdog.timer
 
 # Both platforms
-cat /tmp/openclaw-watchdog-state      # current failure count + repair state
+STATE_FILE="$(jq -r '.state_file // \"/tmp/openclaw-watchdog-state\"' ~/.openclaw/watchdog.json)"
+STATE_FILE="${STATE_FILE/#\~/$HOME}"
+cat "$STATE_FILE"                       # current failure count + repair state
 tail -50 ~/.openclaw/logs/watchdog.log  # recent activity
 ```
 
@@ -189,10 +201,10 @@ tail -50 ~/.openclaw/logs/watchdog.log  # recent activity
 | Action | Command |
 |---|---|
 | Trigger manual repair cycle | `bash ~/.openclaw/bin/watchdog.sh` |
-| Reset incident state | `rm -f /tmp/openclaw-watchdog-state` |
+| Reset incident state | `STATE_FILE="$(jq -r '.state_file // "/tmp/openclaw-watchdog-state"' ~/.openclaw/watchdog.json)"; rm -f "${STATE_FILE/#\~/$HOME}"` |
 | Edit thresholds/timeouts | edit `~/.openclaw/watchdog.json` |
-| Check if repair is running | `cat /tmp/openclaw-watchdog.lock && kill -0 $(cat /tmp/openclaw-watchdog.lock) 2>/dev/null && echo running \|\| echo idle` |
-| Send test Telegram alert | `source ~/.openclaw/bin/tg-helper.sh && TG_TOKEN="$(printenv TELEGRAM_BOT_TOKEN_AVA)" TG_CHAT="<id>" tg_send "test"` |
+| Check if repair is running | `LOCK_FILE="$(jq -r '.lock_file // "/tmp/openclaw-watchdog.lock"' ~/.openclaw/watchdog.json)"; LOCK_FILE="${LOCK_FILE/#\~/$HOME}"; [ -f "$LOCK_FILE" ] && kill -0 "$(cat "$LOCK_FILE")" 2>/dev/null && echo running \|\| echo idle` |
+| Send test Telegram alert | `source ~/.openclaw/bin/tg-helper.sh && TOKEN_ENV="$(jq -r '.telegram_bot_token_env // "TELEGRAM_BOT_TOKEN_AVA"' ~/.openclaw/watchdog.json)" && TG_TOKEN="$(printenv "$TOKEN_ENV")" TG_CHAT="<id>" tg_send "test"` |
 | Force rescue mode | set `"max_repairs_per_incident": 0` in config, then run watchdog |
 | View recovery history | `cat ~/.openclaw/workspace/memory/recovery-log.md` |
 
@@ -206,14 +218,15 @@ tail -50 ~/.openclaw/logs/watchdog.log  # recent activity
 | File | Path |
 |---|---|
 | Config | `~/.openclaw/watchdog.json` |
+| OpenClaw core config | `~/.openclaw/openclaw.json` |
 | Main script | `~/.openclaw/bin/watchdog.sh` |
 | Telegram helper | `~/.openclaw/bin/tg-helper.sh` |
 | Runtime TG helper | `${TMPDIR:-/tmp}/openclaw-tg-helper.sh` |
 | Logs | `~/.openclaw/logs/watchdog.log` |
 | Repair logs | `~/.openclaw/logs/watchdog-codex-attempt-*.log` |
 | Recovery journal | `~/.openclaw/workspace/memory/recovery-log.md` |
-| State file | `/tmp/openclaw-watchdog-state` |
-| Lock file | `/tmp/openclaw-watchdog.lock` |
+| State file | `/tmp/openclaw-watchdog-state` (default, configurable) |
+| Lock file | `/tmp/openclaw-watchdog.lock` (default, configurable) |
 
 ---
 
