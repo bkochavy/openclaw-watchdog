@@ -4,6 +4,11 @@
 
 set -uo pipefail
 
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+fi
+export PATH="$PATH:/usr/local/bin:/usr/bin:/bin"
+
 OPENCLAW_HOME="${OPENCLAW_HOME:-$HOME/.openclaw}"
 CONFIG_FILE_DEFAULT="$OPENCLAW_HOME/watchdog.json"
 CONFIG_FILE="${OPENCLAW_WATCHDOG_CONFIG:-$CONFIG_FILE_DEFAULT}"

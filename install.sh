@@ -20,7 +20,7 @@ Usage: install.sh [--setup] [--quiet] [--check]
 
 Flags:
   --setup  Run setup wizard and write ~/.openclaw/watchdog.json
-  --quiet  Non-interactive setup (requires OPENCLAW_WATCHDOG_CHAT_ID)
+  --quiet  Non-interactive defaults (set OPENCLAW_WATCHDOG_CHAT_ID for Telegram alerts, optional)
   --check  Verify install only, no changes made
 USAGE
 }
@@ -35,6 +35,23 @@ require_cmd() {
     echo "install: required command missing: $cmd" >&2
     exit 1
   fi
+}
+
+ensure_jq() {
+  if command -v jq >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "install: jq not found — attempting install..."
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get install -y jq >/dev/null 2>&1 && return 0
+  fi
+  if command -v brew >/dev/null 2>&1; then
+    brew install jq >/dev/null 2>&1 && return 0
+  fi
+  echo "install: jq is required but could not be auto-installed."
+  echo "  Ubuntu/Debian: sudo apt install jq"
+  echo "  macOS:         brew install jq"
+  exit 1
 }
 
 parse_args() {
@@ -134,8 +151,7 @@ if quiet_mode:
     max_failures_raw = env_or_default("OPENCLAW_WATCHDOG_MAX_FAILURES", str(max_failures_default))
 
     if not chat_id:
-        print("install: OPENCLAW_WATCHDOG_CHAT_ID is required in --quiet mode", file=sys.stderr)
-        raise SystemExit(2)
+        print("install: no OPENCLAW_WATCHDOG_CHAT_ID set — watchdog will repair silently (no Telegram alerts)")
 
     try:
         max_failures = int(max_failures_raw)
@@ -147,11 +163,9 @@ else:
     health_url = prompt("1) OpenClaw health URL", health_default)
     token_env = prompt("2) Telegram bot token env var name", token_env_default)
 
-    chat_id = ""
-    while not chat_id:
-        chat_id = prompt("3) Telegram chat ID (required)", "")
-        if not chat_id:
-            print("Telegram chat ID is required.")
+    chat_id = prompt("3) Telegram chat ID for alerts (leave blank to skip notifications)", "")
+    if not chat_id:
+        print("Telegram notifications disabled. Watchdog will still auto-repair.")
 
     max_failures_raw = prompt("4) Max failures before repair trigger", str(max_failures_default))
     try:
@@ -160,7 +174,10 @@ else:
         max_failures = max_failures_default
 
     print("")
-    print(f"Preview: After {max_failures} failures (~{max_failures * 5} min), the coding agent will attempt repair and notify chat ID {chat_id}.")
+    if chat_id:
+        print(f"Preview: After {max_failures} failures (~{max_failures * 5} min), the coding agent will attempt repair and notify chat ID {chat_id}.")
+    else:
+        print(f"Preview: After {max_failures} failures (~{max_failures * 5} min), the coding agent will attempt repair with no Telegram alerts.")
     confirm = input("Confirm and write config? [y/N]: ").strip().lower()
     if confirm not in {"y", "yes"}:
         print("Setup canceled.")
@@ -240,12 +257,11 @@ check_install() {
   fi
 
   if [ -f "$CONFIG_PATH" ]; then
-    require_cmd jq
+    ensure_jq
     local chat_id
     chat_id=$(jq -r '.telegram_chat_id // empty' "$CONFIG_PATH")
     if [ -z "$chat_id" ]; then
-      echo "check: telegram_chat_id is empty in $CONFIG_PATH" >&2
-      failures=$((failures + 1))
+      echo "check: telegram_chat_id is empty in $CONFIG_PATH (silent repair mode)" >&2
     fi
   fi
 
@@ -283,6 +299,8 @@ check_install() {
 
 main() {
   parse_args "$@"
+
+  ensure_jq
 
   if [ "$QUIET_MODE" -eq 0 ] && [ -n "${OPENCLAW_WATCHDOG_CHAT_ID:-}" ]; then
     QUIET_MODE=1

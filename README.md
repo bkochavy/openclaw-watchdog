@@ -37,12 +37,25 @@ cd openclaw-watchdog
 ./install.sh --setup
 ```
 
+## Requirements
+
+| Tool | Required for | Install |
+|------|-------------|---------|
+| `bash` | installer + watchdog runtime | pre-installed |
+| `curl` | health checks + Telegram Bot API calls | `apt install curl` |
+| `python3` | setup wizard + timeout fallback | `apt install python3` |
+| `jq` | watchdog config parsing + Telegram update parsing | `apt install jq` |
+| `codex` or `claude` CLI | automated repair runs | `npm install -g @openai/codex` or `npm install -g @anthropic-ai/claude-code` |
+
 > **Note on channels:** Notifications require a Telegram bot token because the watchdog
 > must operate independently of OpenClaw (which may be down). Discord/iMessage/Signal
 > notifications require OpenClaw to be running, which defeats the purpose.
 > Rescue mode (`/codex` commands) is Telegram-only by design.
 > If you don't use Telegram, notifications are silently skipped — the watchdog still
 > repairs, it just won't alert you.
+>
+> While the gateway is down, rescue mode polls the Telegram Bot API directly (not OpenClaw)
+> so control and status updates still work during an outage.
 
 ### Reading alerts
 - `🔴` down alert: threshold reached, Codex repair cycle starting
