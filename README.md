@@ -1,4 +1,6 @@
 # openclaw-watchdog
+![openclaw-watchdog](https://raw.githubusercontent.com/bkochavy/openclaw-watchdog/main/.github/social-preview.png)
+
 
 > OpenClaw gateway goes down. This catches it in 10 minutes and repairs it automatically.
 
