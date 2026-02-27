@@ -139,6 +139,7 @@ If you don't use Telegram, the watchdog still auto-repairs. You just won't get a
 
 ## Gotchas
 
+- **On macOS, the launchd template uses both `StartInterval` and `StartCalendarInterval` (every 5 minutes) for timer reliability.**
 - **The bot token goes in your environment**, not in `watchdog.json`. The config stores the *name* of the env var (default: `TELEGRAM_BOT_TOKEN_AVA`). Put the actual token in `~/.openclaw/.env` or your shell profile.
 - **Rescue mode only listens to your chat ID.** Other users messaging the bot won't trigger commands.
 - **Cooldown is 30 minutes by default.** If a repair fails, the watchdog waits before trying again. This prevents a broken agent from making things worse in a loop.
