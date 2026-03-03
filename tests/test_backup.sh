@@ -127,7 +127,7 @@ pass "backup health check deduplicates alerts"
   sentinel_state_set_backup_alert_key() { LAST_ALERT_KEY="$2"; }
 
   mkdir -p "$BACKUP_SYSTEM_DIR"
-  printf 'manifest\n' > "$BACKUP_SYSTEM_DIR/backup-manifest.txt"
+  printf 'backup: 2026-03-02\nbackup_at: %s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" > "$BACKUP_SYSTEM_DIR/backup-manifest.txt"
 
   sentinel_backup_health_check
 
@@ -179,5 +179,125 @@ pass "backup health check clears dedup state when healthy"
   assert_eq "1" "$(wc -l < "$snapshot_log" | tr -d ' ')" "run_cycle should persist backup snapshot"
 )
 pass "backup run_cycle executes due backup and snapshot"
+
+# 8) push_remote updates verification state in parent shell
+(
+  tmp_root="$(mktemp_dir)"
+  backup_dir="$tmp_root/system"
+  mock_bin="$tmp_root/bin"
+  mkdir -p "$backup_dir" "$mock_bin"
+
+  cat > "$mock_bin/git" <<'EOFGIT'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="$1"
+shift || true
+case "$cmd" in
+  remote)
+    sub="${1:-}"
+    if [ "$sub" = "get-url" ]; then
+      exit 1
+    fi
+    exit 0
+    ;;
+  push)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOFGIT
+  chmod +x "$mock_bin/git"
+
+  # shellcheck disable=SC1090
+  source "$BACKUP_LIB"
+  PATH="$mock_bin:$PATH"
+
+  sentinel_backup_push_remote "$backup_dir" "example-user" "example-repo"
+
+  assert_eq "true" "$SENTINEL_BACKUP_LAST_PUSH_VERIFIED" "push success should set verified true"
+  [ -n "$SENTINEL_BACKUP_LAST_PUSH_AT" ] || fail "push success should stamp last_push_at"
+)
+pass "backup push updates verification state"
+
+# 9) manifest freshness uses backup timestamp, not filesystem mtime
+(
+  tmp_root="$(mktemp_dir)"
+  # shellcheck disable=SC1090
+  source "$BACKUP_LIB"
+
+  BACKUP_SYSTEM_DIR="$tmp_root/system"
+  BACKUP_MAX_AGE_HOURS=1
+  mkdir -p "$BACKUP_SYSTEM_DIR"
+
+  printf 'backup: 2000-01-01\nbackup_at: 2000-01-01T00:00:00Z\n' > "$BACKUP_SYSTEM_DIR/backup-manifest.txt"
+  if sentinel_backup_manifest_fresh; then
+    fail "manifest should be stale based on embedded timestamp"
+  fi
+
+  printf 'backup: 2026-03-02\nbackup_at: %s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" > "$BACKUP_SYSTEM_DIR/backup-manifest.txt"
+  sentinel_backup_manifest_fresh
+)
+pass "manifest freshness uses embedded backup_at timestamp"
+
+# 10) run_cycle keeps memory timestamp empty when memory backup fails
+(
+  tmp_root="$(mktemp_dir)"
+  # shellcheck disable=SC1090
+  source "$BACKUP_LIB"
+
+  STATE_FILE="$tmp_root/state.json"
+  BACKUP_ENABLED=true
+  BACKUP_SCHEDULE="00:00"
+  OPENCLAW_HOME="$tmp_root/openclaw"
+  BACKUP_MEMORY_DIR="$tmp_root/memory"
+
+  snapshot_log="$tmp_root/snapshot.log"
+  : > "$snapshot_log"
+
+  sentinel_state_get() { printf '%s\n' ''; }
+  sentinel_state_set_backup_snapshot() { printf '%s\n' "$3" >> "$snapshot_log"; }
+  sentinel_backup_health_check() { :; }
+  sentinel_backup_run_system() {
+    SENTINEL_BACKUP_LAST_SYSTEM_AT="2026-03-02T04:00:00Z"
+    SENTINEL_BACKUP_LAST_PUSH_AT=""
+    SENTINEL_BACKUP_LAST_PUSH_VERIFIED="false"
+    SENTINEL_BACKUP_LAST_MANIFEST_SHA="manifest-sha"
+  }
+  sentinel_backup_memory_run() { return 1; }
+
+  sentinel_backup_run_cycle 0
+
+  assert_eq "" "$(cat "$snapshot_log")" "memory timestamp should be empty when memory backup fails"
+)
+pass "run_cycle does not fabricate memory timestamp on failure"
+
+# 11) run_cycle dry-run avoids writing backup snapshot state
+(
+  tmp_root="$(mktemp_dir)"
+  # shellcheck disable=SC1090
+  source "$BACKUP_LIB"
+
+  SENTINEL_DRY_RUN=1
+  STATE_FILE="$tmp_root/state.json"
+  BACKUP_ENABLED=true
+  BACKUP_SCHEDULE="00:00"
+  OPENCLAW_HOME="$tmp_root/openclaw"
+  BACKUP_MEMORY_DIR="$tmp_root/memory"
+
+  snapshot_log="$tmp_root/snapshot.log"
+  : > "$snapshot_log"
+
+  sentinel_state_get() { printf '%s\n' ''; }
+  sentinel_state_set_backup_snapshot() { printf 'snapshot\n' >> "$snapshot_log"; }
+  sentinel_backup_run_system() { return 0; }
+  sentinel_backup_memory_run() { return 0; }
+
+  sentinel_backup_run_cycle 0
+
+  assert_eq "0" "$(wc -l < "$snapshot_log" | tr -d ' ')" "dry-run should not write backup snapshot state"
+)
+pass "run_cycle dry-run skips state mutation"
 
 bash -n "$BACKUP_LIB"

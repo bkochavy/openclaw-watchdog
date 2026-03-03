@@ -11,7 +11,7 @@
     "codex_timeout_seconds": 180,
     "rescue_timeout_seconds": 420,
     "rescue_command_prefix": "/codex",
-    "codex_model": "gpt-5.3-codex",
+    "codex_model": "o4-mini",
     "codex_bin": "",
     "claude_bin": ""
   },

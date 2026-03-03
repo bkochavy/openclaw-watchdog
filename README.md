@@ -116,7 +116,7 @@ Full example: [`sentinel.example.json`](/private/tmp/sentinel-build/sentinel.exa
 | `codex_timeout_seconds` | int | `180` |
 | `rescue_timeout_seconds` | int | `420` |
 | `rescue_command_prefix` | string | `/codex` |
-| `codex_model` | string | `gpt-5.3-codex` |
+| `codex_model` | string | `o4-mini` |
 | `codex_bin` | string(path) | `""` |
 | `claude_bin` | string(path) | `""` |
 
@@ -198,12 +198,13 @@ bash tests/test_health.sh
 bash tests/test_state.sh
 bash tests/test_lock.sh
 bash tests/test_config.sh
+bash tests/test_notify.sh
+bash tests/test_tg_helper.sh
 bash tests/test_recovery.sh
 bash tests/test_backup.sh
+bash tests/test_sentinel_flags.sh
 bash tests/test_integration.sh
 ```
-
-Legacy compatibility test is still available at `tests/test_watchdog.sh`.
 
 ## Contributing
 

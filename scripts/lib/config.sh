@@ -26,7 +26,7 @@ sentinel_config_default_json() {
         codex_timeout_seconds: 180,
         rescue_timeout_seconds: 420,
         rescue_command_prefix: "/codex",
-        codex_model: "gpt-5.3-codex",
+        codex_model: "o4-mini",
         codex_bin: "",
         claude_bin: ""
       },
@@ -71,6 +71,15 @@ sentinel_config_require_jq() {
 sentinel_config_read_file() {
   local file="$1"
   [ -f "$file" ] && jq -c '.' "$file" 2>/dev/null || printf '{}\n'
+}
+
+sentinel_config_warn() {
+  local msg="$1"
+  if declare -F sentinel_log >/dev/null 2>&1; then
+    sentinel_log "$msg"
+  else
+    printf '%s\n' "$msg" >&2
+  fi
 }
 
 sentinel_config_build_from_legacy() {
@@ -126,7 +135,10 @@ sentinel_config_load() {
   sentinel_config_require_jq || return 1
   defaults="$(sentinel_config_default_json)"
   if [ -f "$config_file" ]; then
-    source_json="$(jq -c '.' "$config_file" 2>/dev/null || printf '{}\n')"
+    if ! source_json="$(jq -c '.' "$config_file" 2>/dev/null)"; then
+      sentinel_config_warn "sentinel: invalid JSON in $config_file; using defaults"
+      source_json='{}'
+    fi
     SENTINEL_CONFIG_SOURCE="sentinel"
   elif [ -f "$watchdog_file" ] || [ -f "$backup_file" ]; then
     source_json="$(sentinel_config_build_from_legacy "$watchdog_file" "$backup_file")"

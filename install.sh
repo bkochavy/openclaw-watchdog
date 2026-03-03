@@ -85,7 +85,7 @@ EOFJSON
 }
 
 run_setup_wizard() {
-  local health_url token_env chat_id
+  local health_url token_env chat_id tmp
   if [ ! -f "$CONFIG_PATH" ]; then write_default_config; fi
 
   if [ "$QUIET_MODE" -eq 1 ]; then
@@ -103,12 +103,18 @@ run_setup_wizard() {
   fi
 
   tmp="$(mktemp "${CONFIG_PATH}.tmp.XXXXXX")"
-  jq --arg health "$health_url" --arg env "$token_env" --arg chat "$chat_id" '
+  if ! jq --arg health "$health_url" --arg env "$token_env" --arg chat "$chat_id" '
     .health_url = $health
     | .notifications.telegram_bot_token_env = $env
     | .notifications.telegram_chat_id = $chat
-  ' "$CONFIG_PATH" > "$tmp"
-  mv "$tmp" "$CONFIG_PATH"
+  ' "$CONFIG_PATH" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! mv "$tmp" "$CONFIG_PATH"; then
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 install_scripts() {
@@ -145,17 +151,23 @@ install_launchd() {
 }
 
 install_systemd() {
+  local sentinel_bin="$BIN_DIR/sentinel.sh"
   mkdir -p "$SYSTEMD_USER_DIR"
-  install -m 0644 "$SCRIPT_DIR/templates/systemd/openclaw-sentinel.service" "$SYSTEMD_USER_DIR/openclaw-sentinel.service"
+  sed -e "s|__SENTINEL_BIN__|$sentinel_bin|g" \
+    "$SCRIPT_DIR/templates/systemd/openclaw-sentinel.service" > "$SYSTEMD_USER_DIR/openclaw-sentinel.service"
+  chmod 0644 "$SYSTEMD_USER_DIR/openclaw-sentinel.service"
   install -m 0644 "$SCRIPT_DIR/templates/systemd/openclaw-sentinel.timer" "$SYSTEMD_USER_DIR/openclaw-sentinel.timer"
   systemctl --user daemon-reload
   systemctl --user enable --now openclaw-sentinel.timer
 }
 
 check_install() {
-  local failures=0
+  local failures=0 lib
   [ -x "$BIN_DIR/sentinel.sh" ] || { printf 'check: missing executable %s\n' "$BIN_DIR/sentinel.sh" >&2; failures=$((failures + 1)); }
   [ -x "$BIN_DIR/tg-helper.sh" ] || { printf 'check: missing executable %s\n' "$BIN_DIR/tg-helper.sh" >&2; failures=$((failures + 1)); }
+  for lib in backup-memory.sh backup.sh config.sh health.sh lock.sh notify.sh recovery.sh state.sh tg-helper.sh; do
+    [ -x "$LIB_DIR/$lib" ] || { printf 'check: missing executable %s\n' "$LIB_DIR/$lib" >&2; failures=$((failures + 1)); }
+  done
   [ -f "$CONFIG_PATH" ] || { printf 'check: missing config %s\n' "$CONFIG_PATH" >&2; failures=$((failures + 1)); }
 
   case "$(uname -s)" in

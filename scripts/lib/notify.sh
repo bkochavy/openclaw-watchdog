@@ -12,8 +12,13 @@ sentinel_notify_log() {
   fi
 }
 
+sentinel_notify_env_key_allowed() {
+  local key="$1" token_key="${2:-}"
+  [ "$key" = "$token_key" ] || [ "$key" = "TELEGRAM_BOT_TOKEN_AVA" ]
+}
+
 sentinel_notify_load_env_file() {
-  local env_file="$1"
+  local env_file="$1" allowed_token_key="${2:-}"
   local line key value
 
   [ -f "$env_file" ] || return 0
@@ -25,6 +30,7 @@ sentinel_notify_load_env_file() {
     if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
       key="${line%%=*}"
       value="${line#*=}"
+      sentinel_notify_env_key_allowed "$key" "$allowed_token_key" || continue
       value="${value%$'\r'}"
       if [[ "$value" =~ ^\".*\"$ ]]; then
         value="${value#\"}"
@@ -36,9 +42,9 @@ sentinel_notify_load_env_file() {
 }
 
 sentinel_notify_bootstrap_env() {
-  local openclaw_home="${OPENCLAW_HOME:-$HOME/.openclaw}"
-  sentinel_notify_load_env_file "$HOME/.config/env/global.env"
-  sentinel_notify_load_env_file "$openclaw_home/.env"
+  local token_env="$1" openclaw_home="${OPENCLAW_HOME:-$HOME/.openclaw}"
+  sentinel_notify_load_env_file "$HOME/.config/env/global.env" "$token_env"
+  sentinel_notify_load_env_file "$openclaw_home/.env" "$token_env"
 }
 
 sentinel_notify_init() {
@@ -51,17 +57,37 @@ sentinel_notify_init() {
   SENTINEL_NOTIFY_DISCORD_WEBHOOK="$discord_webhook"
 }
 
+sentinel_notify_get_telegram_token() {
+  printf '%s\n' "$SENTINEL_NOTIFY_TG_TOKEN"
+}
+
+sentinel_notify_get_telegram_chat() {
+  printf '%s\n' "$SENTINEL_NOTIFY_TG_CHAT"
+}
+
+sentinel_notify_telegram_post_json() {
+  local token="$1" endpoint="$2" payload="$3"
+  curl -fsS --max-time 10 \
+    --config - \
+    -H 'Content-Type: application/json' \
+    -d "$payload" >/dev/null 2>&1 <<EOF
+url = "https://api.telegram.org/bot${token}/${endpoint}"
+request = "POST"
+EOF
+}
+
 sentinel_notify_telegram() {
-  local msg="$1"
+  local msg="$1" payload
 
   if [ -z "$SENTINEL_NOTIFY_TG_TOKEN" ] || [ -z "$SENTINEL_NOTIFY_TG_CHAT" ]; then
     return 0
   fi
 
-  curl -fsS --max-time 10 "https://api.telegram.org/bot${SENTINEL_NOTIFY_TG_TOKEN}/sendMessage" \
-    -d chat_id="$SENTINEL_NOTIFY_TG_CHAT" \
-    -d text="$msg" \
-    -d parse_mode="Markdown" >/dev/null 2>&1 || {
+  payload="$(jq -cn \
+    --arg chat "$SENTINEL_NOTIFY_TG_CHAT" \
+    --arg text "$msg" \
+    '{chat_id: $chat, text: $text, parse_mode: "Markdown"}')"
+  sentinel_notify_telegram_post_json "$SENTINEL_NOTIFY_TG_TOKEN" "sendMessage" "$payload" || {
       sentinel_notify_log "sentinel: telegram send failed"
       return 1
     }

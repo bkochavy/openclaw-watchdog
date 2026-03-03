@@ -5,21 +5,34 @@ sentinel_tg_require() {
   [ -n "${1:-}" ] && [ -n "${2:-}" ]
 }
 
+sentinel_tg_post_json() {
+  local token="$1" endpoint="$2" payload="$3" timeout="${4:-10}"
+  curl -fsS --max-time "$timeout" \
+    --config - \
+    -H 'Content-Type: application/json' \
+    -d "$payload" <<EOF
+url = "https://api.telegram.org/bot${token}/${endpoint}"
+request = "POST"
+EOF
+}
+
 sentinel_tg_send() {
-  local token="$1" chat_id="$2" suffix="$3" message="$4"
+  local token="$1" chat_id="$2" suffix="$3" message="$4" payload
   sentinel_tg_require "$token" "$chat_id" || return 1
   if [ -n "$suffix" ] && [[ "$message" != *"$suffix" ]]; then
     message="${message}
 ${suffix}"
   fi
-  curl -fsS --max-time 10 "https://api.telegram.org/bot${token}/sendMessage" \
-    -d chat_id="$chat_id" -d text="$message" -d parse_mode="Markdown" >/dev/null 2>&1
+  payload="$(jq -cn --arg chat "$chat_id" --arg text "$message" \
+    '{chat_id: $chat, text: $text, parse_mode: "Markdown"}')"
+  sentinel_tg_post_json "$token" "sendMessage" "$payload" >/dev/null 2>&1
 }
 
 sentinel_tg_latest_update_id() {
-  local token="$1"
+  local token="$1" payload
   sentinel_tg_require "$token" "x" || { printf '0\n'; return 0; }
-  curl -fsS --max-time 10 "https://api.telegram.org/bot${token}/getUpdates" -d limit=1 -d offset=-1 \
+  payload="$(jq -cn '{limit: 1, offset: -1}')"
+  sentinel_tg_post_json "$token" "getUpdates" "$payload" \
     | jq -r '.result[-1].update_id // 0' 2>/dev/null || printf '0\n'
 }
 
@@ -42,10 +55,11 @@ sentinel_tg_prime_offset() {
 
 sentinel_tg_fetch_prefixed_command() {
   local token="$1" chat_id="$2" prefix="$3" offset_file="$4"
-  local offset updates last_id command
+  local offset updates last_id command payload
   sentinel_tg_require "$token" "$chat_id" || return 1
   offset="$(sentinel_tg_read_offset "$offset_file")"
-  updates="$(curl -fsS --max-time 10 "https://api.telegram.org/bot${token}/getUpdates" -d offset="$offset" -d timeout=0 2>/dev/null || true)"
+  payload="$(jq -cn --argjson offset "${offset:-0}" '{offset: $offset, timeout: 0}')"
+  updates="$(sentinel_tg_post_json "$token" "getUpdates" "$payload" 10 2>/dev/null || true)"
   last_id="$(printf '%s\n' "$updates" | jq -r '.result[-1].update_id // empty' 2>/dev/null || true)"
   [ -n "$last_id" ] && sentinel_tg_write_offset "$offset_file" "$((last_id + 1))"
 
@@ -65,7 +79,7 @@ sentinel_tg_fetch_prefixed_command() {
 
 sentinel_tg_ask() {
   local token="$1" chat_id="$2" suffix="$3" health_url="$4" question="$5"
-  local offset payload reply i reply_id
+  local offset payload reply i reply_id req
   sentinel_tg_require "$token" "$chat_id" || return 1
   offset="$(( $(sentinel_tg_latest_update_id "$token") + 1 ))"
   sentinel_tg_send "$token" "$chat_id" "$suffix" "$question" || return 1
@@ -78,14 +92,18 @@ sentinel_tg_ask() {
       return 1
     fi
 
-    payload="$(curl -fsS --max-time 10 "https://api.telegram.org/bot${token}/getUpdates" -d offset="$offset" -d timeout=0 2>/dev/null || true)"
+    req="$(jq -cn --argjson o "$offset" '{offset: $o, timeout: 0}')"
+    payload="$(sentinel_tg_post_json "$token" "getUpdates" "$req" 10 2>/dev/null || true)"
     reply="$(printf '%s\n' "$payload" | jq -r --arg chat "$chat_id" '
       .result[] | select((.message.chat.id | tostring) == $chat) | (.message.text // empty)
     ' 2>/dev/null | head -1)"
 
     if [ -n "$reply" ]; then
       reply_id="$(printf '%s\n' "$payload" | jq -r '.result[-1].update_id // empty' 2>/dev/null || true)"
-      [ -n "$reply_id" ] && curl -fsS --max-time 10 "https://api.telegram.org/bot${token}/getUpdates" -d offset="$((reply_id + 1))" -d timeout=0 >/dev/null 2>&1 || true
+      if [ -n "$reply_id" ]; then
+        req="$(jq -cn --argjson o "$((reply_id + 1))" '{offset: $o, timeout: 0}')"
+        sentinel_tg_post_json "$token" "getUpdates" "$req" 10 >/dev/null 2>&1 || true
+      fi
       printf '%s\n' "$reply"
       return 0
     fi
@@ -110,20 +128,33 @@ tg_send() {
   [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ] && return 1
   if [ -n "$TG_SUFFIX" ] && [[ "$msg" != *"$TG_SUFFIX" ]]; then msg="${msg}
 ${TG_SUFFIX}"; fi
-  curl -fsS --max-time 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d chat_id="$TG_CHAT" -d text="$msg" -d parse_mode="Markdown" >/dev/null 2>&1
+  payload="$(jq -cn --arg chat "$TG_CHAT" --arg text "$msg" '{chat_id: $chat, text: $text, parse_mode: "Markdown"}')"
+  curl -fsS --max-time 10 --config - -H 'Content-Type: application/json' -d "$payload" >/dev/null 2>&1 <<EOF
+url = "https://api.telegram.org/bot${TG_TOKEN}/sendMessage"
+request = "POST"
+EOF
 }
 
 tg_ask() {
-  local question="$1" last_id offset payload reply i
+  local question="$1" last_id offset payload reply i req
   [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ] && return 1
-  last_id=$(curl -fsS --max-time 10 "https://api.telegram.org/bot${TG_TOKEN}/getUpdates" -d limit=1 -d offset=-1 | jq -r '.result[-1].update_id // 0' 2>/dev/null)
+  req="$(jq -cn '{limit: 1, offset: -1}')"
+  last_id=$(curl -fsS --max-time 10 --config - -H 'Content-Type: application/json' -d "$req" <<EOF | jq -r '.result[-1].update_id // 0' 2>/dev/null
+url = "https://api.telegram.org/bot${TG_TOKEN}/getUpdates"
+request = "POST"
+EOF
+)
   offset=$((last_id + 1))
   tg_send "$question" || return 1
   for i in $(seq 1 24); do
     sleep 5
     if curl -fsS --max-time 2 "$TG_HEALTH_URL" >/dev/null 2>&1; then return 1; fi
-    payload=$(curl -fsS --max-time 10 "https://api.telegram.org/bot${TG_TOKEN}/getUpdates" -d offset="$offset" -d timeout=0 2>/dev/null || true)
+    req="$(jq -cn --argjson o "$offset" '{offset: $o, timeout: 0}')"
+    payload=$(curl -fsS --max-time 10 --config - -H 'Content-Type: application/json' -d "$req" 2>/dev/null <<EOF || true
+url = "https://api.telegram.org/bot${TG_TOKEN}/getUpdates"
+request = "POST"
+EOF
+)
     reply=$(printf '%s\n' "$payload" | jq -r --arg chat "$TG_CHAT" '.result[] | select((.message.chat.id | tostring) == $chat) | (.message.text // empty)' 2>/dev/null | head -1)
     [ -n "$reply" ] && printf '%s\n' "$reply" && return 0
   done

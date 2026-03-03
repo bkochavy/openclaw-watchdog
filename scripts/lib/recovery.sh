@@ -92,6 +92,7 @@ sentinel_recovery_try_deterministic() {
   local tier="$1" cmd_desc="$2"
   shift 2
   sentinel_state_set_tier "$STATE_FILE" "$tier"
+  sentinel_state_increment_repairs "$STATE_FILE"
   sentinel_recovery_log "sentinel: tier ${tier} - ${cmd_desc}"
   sentinel_recovery_exec "$@" >/dev/null 2>&1 || true
   sentinel_recovery_wait_check 45
@@ -123,16 +124,23 @@ sentinel_recovery_try_agent() {
 }
 
 sentinel_recovery_rescue_mode() {
-  local announced cmd prompt stamp log_file output
+  local announced cmd prompt stamp log_file output tg_token tg_chat
+  if declare -F sentinel_notify_get_telegram_token >/dev/null 2>&1; then
+    tg_token="$(sentinel_notify_get_telegram_token)"
+    tg_chat="$(sentinel_notify_get_telegram_chat)"
+  else
+    tg_token=""
+    tg_chat=""
+  fi
   announced="$(sentinel_state_get "$STATE_FILE" '.incident.rescue_announced' 'false')"
   if [ "$announced" != "true" ]; then
-    sentinel_tg_prime_offset "$SENTINEL_NOTIFY_TG_TOKEN" "$RECOVERY_OFFSET_FILE"
+    sentinel_tg_prime_offset "$tg_token" "$RECOVERY_OFFSET_FILE"
     sentinel_notify_send "🚨 Auto-repair limit reached. Rescue mode active. Send ${RECOVERY_RESCUE_PREFIX} <command>."
     sentinel_state_set_rescue_announced "$STATE_FILE" true
     return 0
   fi
 
-  cmd="$(sentinel_tg_fetch_prefixed_command "$SENTINEL_NOTIFY_TG_TOKEN" "$SENTINEL_NOTIFY_TG_CHAT" "$RECOVERY_RESCUE_PREFIX" "$RECOVERY_OFFSET_FILE" || true)"
+  cmd="$(sentinel_tg_fetch_prefixed_command "$tg_token" "$tg_chat" "$RECOVERY_RESCUE_PREFIX" "$RECOVERY_OFFSET_FILE" || true)"
   [ -z "$cmd" ] && return 0
   stamp="$(date -u +"%Y%m%dT%H%M%SZ")"; log_file="$LOG_DIR/sentinel-rescue-$stamp.log"
   prompt="Operator command: ${cmd}. Execute safely and attempt recovery. Validate health via ${HEALTH_URL}."

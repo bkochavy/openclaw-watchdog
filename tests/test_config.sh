@@ -35,6 +35,7 @@ mktemp_dir() {
   default_json="$(sentinel_config_default_json)"
 
   assert_eq "http://127.0.0.1:18789/healthz" "$(jq -r '.health_url' <<<"$default_json")" "default health_url should use /healthz"
+  assert_eq "o4-mini" "$(jq -r '.recovery.codex_model' <<<"$default_json")" "default codex model should be valid"
   assert_eq "true" "$(jq -r '.backup.enabled' <<<"$default_json")" "backup should be enabled by default"
   assert_eq "3" "$(jq -r '.recovery.max_repairs_per_incident' <<<"$default_json")" "max repairs default should match PRD"
 )
@@ -186,5 +187,22 @@ pass "config helper getters"
   assert_eq "0" "$tmp_count" "atomic write should not leave temp files"
 )
 pass "config write atomic behavior"
+
+# 8) invalid sentinel config emits warning and falls back to defaults
+(
+  tmp_root="$(mktemp_dir)"
+  config_file="$tmp_root/sentinel.json"
+  err_file="$tmp_root/stderr.log"
+  printf '{"health_url": "http://127.0.0.1:1/healthz",' > "$config_file"
+
+  # shellcheck disable=SC1090
+  source "$CONFIG_LIB"
+  sentinel_config_load "$config_file" 2>"$err_file"
+
+  assert_eq "sentinel" "$SENTINEL_CONFIG_SOURCE" "invalid explicit config should still report sentinel source"
+  assert_eq "http://127.0.0.1:18789/healthz" "$(sentinel_config_get_string '.health_url' '')" "invalid config should fall back to defaults"
+  grep -q 'invalid JSON' "$err_file" || fail "invalid config should emit warning"
+)
+pass "invalid sentinel config warns and falls back to defaults"
 
 bash -n "$CONFIG_LIB"

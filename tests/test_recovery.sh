@@ -279,4 +279,29 @@ EOFCODEX
 )
 pass "agent execution applies timeout"
 
+# 7) deterministic tiers increment repairs_attempted
+(
+  tmp_root="$(mktemp_dir)"
+  state_file="$tmp_root/state.json"
+
+  # shellcheck disable=SC1090
+  source "$STATE_LIB"
+  # shellcheck disable=SC1090
+  source "$RECOVERY_LIB"
+
+  STATE_FILE="$state_file"
+  HEALTH_URL="http://127.0.0.1:18789/healthz"
+
+  sentinel_state_init "$STATE_FILE"
+  sentinel_state_ensure_incident "$STATE_FILE"
+  sentinel_recovery_exec() { return 1; }
+  sentinel_recovery_wait_check() { return 1; }
+
+  sentinel_recovery_try_deterministic 1 "gateway restart" openclaw gateway restart || true
+
+  assert_eq "1" "$(sentinel_state_get "$STATE_FILE" '.incident.tier_reached' '0')" "deterministic tier should set tier"
+  assert_eq "1" "$(sentinel_state_get "$STATE_FILE" '.incident.repairs_attempted' '0')" "deterministic tier should increment repairs"
+)
+pass "deterministic tiers increment repairs"
+
 bash -n "$RECOVERY_LIB"

@@ -7,4 +7,4 @@ After=network-online.target
 Type=oneshot
 Environment=HOME=%h
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/.openclaw/bin/sentinel.sh
+ExecStart=__SENTINEL_BIN__
