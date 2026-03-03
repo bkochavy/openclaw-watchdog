@@ -148,4 +148,36 @@ pass "acquire replaces stale lock"
 )
 pass "pid alive helper validates input"
 
+# 9) lock acquisition remains atomic under concurrent contention
+(
+  tmp_root="$(mktemp_dir)"
+  lock_file="$tmp_root/sentinel.lock"
+  acquired_log="$tmp_root/acquired.log"
+  : > "$acquired_log"
+
+  i=1
+  while [ "$i" -le 20 ]; do
+    bash -c 'source "$1"; if sentinel_lock_acquire "$2" 900; then echo "$$" >> "$3"; sleep 1; fi' _ "$LOCK_LIB" "$lock_file" "$acquired_log" &
+    i=$((i + 1))
+  done
+  wait
+
+  assert_eq "1" "$(wc -l < "$acquired_log" | tr -d ' ')" "exactly one contender should acquire the lock"
+)
+pass "lock acquire is atomic under contention"
+
+# 10) release does not delete a lock owned by another process
+(
+  tmp_root="$(mktemp_dir)"
+  lock_file="$tmp_root/sentinel.lock"
+
+  # shellcheck disable=SC1090
+  source "$LOCK_LIB"
+  sentinel_lock_acquire "$lock_file" 900
+
+  bash -c 'source "$1"; sentinel_lock_release "$2"' _ "$LOCK_LIB" "$lock_file"
+  [ -f "$lock_file" ] || fail "non-owner release should not remove lock"
+)
+pass "lock release preserves non-owner lock"
+
 bash -n "$LOCK_LIB"

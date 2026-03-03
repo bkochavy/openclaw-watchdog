@@ -14,6 +14,54 @@ sentinel_recovery_exec() {
   "$@"
 }
 
+sentinel_recovery_python_timeout() {
+  local timeout_seconds="$1"
+  shift
+  python3 - "$timeout_seconds" "$@" <<'PY'
+import subprocess
+import sys
+
+timeout_seconds = int(sys.argv[1])
+command = sys.argv[2:]
+try:
+    completed = subprocess.run(command, timeout=timeout_seconds, check=False)
+    raise SystemExit(completed.returncode)
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+PY
+}
+
+sentinel_recovery_exec_with_timeout() {
+  local timeout_seconds="${1:-0}"
+  shift
+
+  if [ "${SENTINEL_DRY_RUN:-0}" = "1" ]; then
+    sentinel_recovery_exec "$@"
+    return 0
+  fi
+
+  if [[ ! "$timeout_seconds" =~ ^[0-9]+$ ]] || [ "$timeout_seconds" -le 0 ]; then
+    sentinel_recovery_exec "$@"
+    return $?
+  fi
+
+  if command -v timeout >/dev/null 2>&1; then
+    sentinel_recovery_exec timeout "$timeout_seconds" "$@"
+    return $?
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    sentinel_recovery_exec gtimeout "$timeout_seconds" "$@"
+    return $?
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    sentinel_recovery_python_timeout "$timeout_seconds" "$@"
+    return $?
+  fi
+
+  sentinel_recovery_log "sentinel: timeout helpers unavailable; running without timeout"
+  sentinel_recovery_exec "$@"
+}
+
 sentinel_recovery_resolve_agent() {
   if [ -n "$RECOVERY_CODEX_BIN" ] && [ -x "$RECOVERY_CODEX_BIN" ]; then printf 'codex:%s\n' "$RECOVERY_CODEX_BIN"; return 0; fi
   if command -v codex >/dev/null 2>&1; then printf 'codex:%s\n' "$(command -v codex)"; return 0; fi
@@ -28,9 +76,9 @@ sentinel_recovery_run_agent() {
   agent="$(sentinel_recovery_resolve_agent || true)"; kind="${agent%%:*}"; bin="${agent#*:}"
   [ "$kind" = "none" ] && { sentinel_notify_send "🚨 Sentinel could not find Codex or Claude CLI."; return 127; }
   if [ "$kind" = "codex" ]; then
-    sentinel_recovery_exec "$bin" --dangerously-bypass-approvals-and-sandbox --model "$RECOVERY_CODEX_MODEL" "$prompt"
+    sentinel_recovery_exec_with_timeout "$timeout_seconds" "$bin" --dangerously-bypass-approvals-and-sandbox --model "$RECOVERY_CODEX_MODEL" "$prompt"
   else
-    sentinel_recovery_exec "$bin" --dangerously-skip-permissions "$prompt"
+    sentinel_recovery_exec_with_timeout "$timeout_seconds" "$bin" --dangerously-skip-permissions "$prompt"
   fi
 }
 

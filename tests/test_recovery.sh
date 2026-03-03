@@ -234,4 +234,49 @@ pass "recovery cooldown prevents repeated attempts"
 )
 pass "max repairs triggers rescue mode"
 
+# 6) coding agent execution enforces configured timeout
+(
+  tmp_root="$(mktemp_dir)"
+  mock_bin="$tmp_root/bin"
+  mkdir -p "$mock_bin"
+  timeout_log="$tmp_root/timeout.log"
+  codex_log="$tmp_root/codex.log"
+  : > "$timeout_log"
+  : > "$codex_log"
+
+  cat > "$mock_bin/timeout" <<'EOFTIMEOUT'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$MOCK_TIMEOUT_LOG"
+seconds="$1"
+shift
+[ -n "$seconds" ]
+"$@"
+EOFTIMEOUT
+  chmod +x "$mock_bin/timeout"
+
+  cat > "$mock_bin/codex" <<'EOFCODEX'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$MOCK_CODEX_LOG"
+exit 0
+EOFCODEX
+  chmod +x "$mock_bin/codex"
+
+  # shellcheck disable=SC1090
+  source "$RECOVERY_LIB"
+  PATH="$mock_bin:$PATH"
+  export MOCK_TIMEOUT_LOG="$timeout_log"
+  export MOCK_CODEX_LOG="$codex_log"
+  RECOVERY_CODEX_BIN=""
+  RECOVERY_CLAUDE_BIN=""
+  RECOVERY_CODEX_MODEL="test-model"
+
+  sentinel_recovery_run_agent 17 "repair now"
+
+  grep -q '^17 ' "$timeout_log" || fail "timeout wrapper should receive configured timeout seconds"
+  grep -q -- '--dangerously-bypass-approvals-and-sandbox --model test-model repair now' "$codex_log" || fail "codex invocation should include model and prompt"
+)
+pass "agent execution applies timeout"
+
 bash -n "$RECOVERY_LIB"
