@@ -1,234 +1,230 @@
-# openclaw-watchdog
-
-![openclaw-watchdog](https://raw.githubusercontent.com/bkochavy/openclaw-watchdog/main/.github/social-preview.png)
+# openclaw-sentinel
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-compatible-orange)](https://openclaw.ai)
 
-**Your [OpenClaw](https://openclaw.ai) gateway crashes at 2 AM. You wake up to a Telegram message: "Auto-repair successful, gateway is back online." You go back to sleep.**
+`openclaw-sentinel` is a unified watchdog and backup service for OpenClaw gateways.
 
-OpenClaw's service manager handles normal restarts, but some failures stick — bad config, port conflicts, a broken update. When that happens, your AI assistant silently stops responding and nobody notices until you check.
+It replaces separate watchdog and backup timers with one scheduler-driven entrypoint that:
+- Performs strict health checks against `/healthz` (`{"ok": true}` required)
+- Runs deterministic recovery before coding-agent repair
+- Runs system + memory backups on schedule
+- Verifies backup freshness and sends deduplicated alerts
+- Preserves incident state in atomic JSON files
 
-This watchdog catches those hard crashes, sends you a Telegram alert, and launches a coding agent (Codex or Claude Code) to diagnose and fix it automatically. If the agent can't fix it after 3 tries, you get rescue mode: reply with instructions from your phone and the watchdog routes them to the agent while the gateway is still down.
+## What It Does
 
-Works on any [OpenClaw](https://openclaw.ai) install — macOS and Linux.
+Sentinel runs as a periodic oneshot job (launchd on macOS, systemd timer on Linux):
+1. Acquire lock (`state/sentinel.lock`) with stale detection
+2. Load unified config (`sentinel.json`) and state (`sentinel-state.json`)
+3. Probe health (`/healthz`, fallback `openclaw gateway status --json`)
+4. If healthy: run backup cycle (if due), then backup health check
+5. If unhealthy: run tiered recovery with incident tracking
+6. Release lock
 
----
+Recovery tiers are strictly ordered:
+1. `openclaw gateway restart`
+2. `openclaw doctor --fix --non-interactive`
+3. Config rollback from backup
+4. Coding agent repair (Codex/Claude)
+5. Telegram rescue mode
+
+Before tier 3+ actions, sentinel verifies backup freshness and creates an emergency backup if needed.
+
+## Architecture Overview
+
+Core modules in `scripts/lib/`:
+- `config.sh`: config defaults, loading, helper getters, legacy migration
+- `state.sh`: JSON state init/read/write, incident lifecycle, backup snapshot metadata
+- `lock.sh`: lock acquire/release, stale detection by PID + age
+- `health.sh`: strict health probe and fallback probe, `wait_for_ok`
+- `notify.sh`: unified Telegram + Discord notifications
+- `recovery.sh`: tier escalation, cooldown logic, agent resolution, rescue mode
+- `backup.sh`: schedule checks, system backup, manifest generation, dedup alerts
+- `backup-memory.sh`: memory/session backup snapshots
+- `tg-helper.sh`: Telegram runtime helper for rescue-mode agent workflows
+
+Main entrypoint: `scripts/sentinel.sh`.
 
 ## Install
 
+### One-line install
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bkochavy/openclaw-watchdog/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bkochavy/openclaw-sentinel/main/install.sh | bash
 ```
 
-The installer runs a setup wizard that asks for your Telegram chat ID and configures the system scheduler (launchd on macOS, systemd on Linux). Health checks start at load on macOS, within ~2 minutes on Linux, then continue every 5 minutes.
-
-> **Don't use Telegram?** That's fine. Skip the chat ID and the watchdog still auto-repairs, it just won't alert you.
-
-<details>
-<summary>Alternative: clone and configure manually</summary>
+### Local install
 
 ```bash
-git clone https://github.com/bkochavy/openclaw-watchdog.git
-cd openclaw-watchdog
+git clone https://github.com/bkochavy/openclaw-sentinel.git
+cd openclaw-sentinel
+./install.sh
+```
+
+### Installer flags
+
+```bash
+# interactive setup wizard
 ./install.sh --setup
-```
 
-For CI or unattended installs, pass your chat ID as an env var:
-```bash
-OPENCLAW_WATCHDOG_CHAT_ID=123456789 ./install.sh --quiet
+# non-interactive setup (OPENCLAW_SENTINEL_CHAT_ID optional)
+./install.sh --setup --quiet
+
+# migrate legacy watchdog/backup configs into sentinel.json
+./install.sh --migrate
+
+# verify installation only
+./install.sh --check
 ```
-</details>
 
 ### Requirements
 
-| Dependency | Purpose | Install |
+- `openclaw`
+- `bash`
+- `curl`
+- `jq`
+- `git`
+
+## Config Reference
+
+Default config path: `~/.openclaw/sentinel.json`.
+
+Full example: [`sentinel.example.json`](/private/tmp/sentinel-build/sentinel.example.json).
+
+### Top-level
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `health_url` | string | `http://127.0.0.1:18789/healthz` | Primary gateway health endpoint |
+| `check_interval_seconds` | int | `300` | Scheduler interval metadata |
+| `state_file` | string(path) | `~/.openclaw/state/sentinel-state.json` | Runtime state JSON |
+| `lock_file` | string(path) | `~/.openclaw/state/sentinel.lock` | Concurrency lock JSON |
+| `recovery_log` | string(path) | `~/.openclaw/workspace/memory/recovery-log.md` | Recovery journal path |
+| `log_dir` | string(path) | `~/.openclaw/logs` | Sentinel logs directory |
+
+### `recovery`
+
+| Key | Type | Default |
 |---|---|---|
-| `openclaw` | gateway runtime + CLI used by repairs | `curl -fsSL https://openclaw.ai/install.sh | bash` |
-| `bash`, `curl` | runtime + health checks | pre-installed on macOS/Linux |
-| `jq` | config & Telegram API parsing | `brew install jq` / `apt install jq` |
-| `python3` | setup wizard + timeout fallback | `brew install python3` / `apt install python3` |
-| `codex` or `claude` | coding agent for auto-repair | `npm i -g @openai/codex` or `npm i -g @anthropic-ai/claude-code` |
+| `max_failures_before_action` | int | `2` |
+| `cooldown_seconds` | int | `1800` |
+| `max_repairs_per_incident` | int | `3` |
+| `deterministic_restart_enabled` | bool | `true` |
+| `deterministic_doctor_enabled` | bool | `true` |
+| `config_rollback_enabled` | bool | `true` |
+| `codex_timeout_seconds` | int | `180` |
+| `rescue_timeout_seconds` | int | `420` |
+| `rescue_command_prefix` | string | `/codex` |
+| `codex_model` | string | `gpt-5.3-codex` |
+| `codex_bin` | string(path) | `""` |
+| `claude_bin` | string(path) | `""` |
 
-The installer will try to install `jq` automatically if it's missing.
+### `backup`
 
----
+| Key | Type | Default |
+|---|---|---|
+| `enabled` | bool | `true` |
+| `schedule` | string (`HH:MM`) | `04:00` |
+| `system_backup_dir` | string(path) | `~/backups/openclaw-system` |
+| `memory_backup_dir` | string(path) | `~/backups/openclaw-memory` |
+| `github_repo` | string | `""` |
+| `github_user` | string | `""` |
+| `include_skills` | bool | `true` |
+| `include_scripts` | bool | `true` |
+| `include_launchd` | bool | `true` |
+| `include_agents` | bool | `true` |
+| `redact_env_values` | bool | `true` |
+| `max_backup_age_hours` | int | `30` |
+| `critical_files` | string[] | `openclaw/openclaw.json`, `workspace-config/AGENTS.md`, `workspace-config/SOUL.md` |
 
-## How it works
+### `notifications`
 
-```
-Gateway healthy ─── watchdog checks every 5 min ─── all clear, do nothing
-                                                          │
-Gateway down ────── 1st failure: note it, wait ───────────┘
-                    2nd failure (~10 min): trigger repair
-                         │
-              ┌──────────┴──────────┐
-              │  Coding agent runs  │
-              │  diagnoses + fixes  │
-              │  sends TG updates   │
-              └──────────┬──────────┘
-                         │
-              ┌────── recovered? ──────┐
-              yes                      no
-               │                  retry (up to 3x)
-          TG: "back online"            │
-                              enters rescue mode
-                              you reply from phone
-```
+| Key | Type | Default |
+|---|---|---|
+| `telegram_bot_token_env` | string | `TELEGRAM_BOT_TOKEN_AVA` |
+| `telegram_chat_id` | string | `""` |
+| `discord_webhook_url` | string | `""` |
+| `notify_on_recovery` | bool | `true` |
+| `notify_on_backup_failure` | bool | `true` |
+| `notify_on_backup_success` | bool | `false` |
 
-### What the alerts look like
+## CLI Flags
 
-| Alert | Meaning |
+Run `scripts/sentinel.sh` directly (or installed `~/.openclaw/bin/sentinel.sh`):
+
+| Flag | Behavior |
 |---|---|
-| `🔴 Gateway down for ~10 minutes...` | Threshold hit, coding agent is starting repair |
-| `🔧 Repair attempt #2 starting...` | Active repair in progress |
-| `🚨 Auto-repair failed after 3 attempts` | Rescue mode active — send `/codex` commands |
-| `🟢 Gateway recovered` | Back online |
+| _(none)_ | Normal health + recovery + backup flow |
+| `--backup-only` | Skip health/recovery, run backup cycle |
+| `--health-only` | Skip backup cycle, run health/recovery |
+| `--force-backup` | Force backup regardless of schedule |
+| `--dry-run` | Log mutating actions without executing them |
+| `--status` | Print current JSON state |
+| `--reset-incident` | Clear current incident and failure counter |
+| `--migrate` | Build `sentinel.json` from legacy configs |
+| `--help` | Print usage |
 
-### Rescue mode
+## Migration From watchdog + backup
 
-When auto-repair is exhausted, reply in Telegram with:
+Sentinel supports legacy `watchdog.json` and `backup.json` migration.
 
+Recommended cutover:
+1. Install sentinel with migration:
+```bash
+./install.sh --migrate
 ```
-/codex inspect gateway.err.log and fix the startup crash
+2. Confirm sentinel config exists:
+```bash
+cat ~/.openclaw/sentinel.json
+```
+3. Verify scheduler health:
+```bash
+./install.sh --check
+```
+4. Confirm old watchdog/backup timers are unloaded (installer handles this automatically).
+
+`sentinel_config_load` behavior:
+- Uses `sentinel.json` when present
+- Else merges legacy watchdog + backup config fields
+- Else uses built-in defaults
+
+## Testing
+
+Run module tests (TAP-style shell scripts):
+
+```bash
+bash tests/test_health.sh
+bash tests/test_state.sh
+bash tests/test_lock.sh
+bash tests/test_config.sh
+bash tests/test_recovery.sh
+bash tests/test_backup.sh
+bash tests/test_integration.sh
 ```
 
-The watchdog polls the Telegram Bot API directly (not through OpenClaw), so commands work even while the gateway is down.
+Legacy compatibility test is still available at `tests/test_watchdog.sh`.
 
----
+## Contributing
 
-## Configuration
+1. Fork and create a feature branch.
+2. Keep `scripts/lib/*.sh` focused and under 200 lines where possible.
+3. Add or update tests for every behavior change.
+4. Run all tests before opening a PR.
+5. Keep dependencies limited to `bash`, `curl`, `jq`, and `git`.
 
-After install, settings live in `~/.openclaw/watchdog.json`:
-
-```jsonc
-{
-  "health_url": "http://127.0.0.1:18789", // gateway health endpoint
-  "telegram_bot_token_env": "TELEGRAM_BOT_TOKEN_AVA", // env var holding your bot token
-  "telegram_chat_id": "123456789", // your Telegram chat ID
-  "max_failures": 2, // consecutive failures before repair (2 = ~10 min)
-  "cooldown_seconds": 1800, // wait between repair attempts
-  "max_repairs_per_incident": 3, // attempts before rescue mode
-  "codex_timeout_seconds": 180, // per-attempt timeout
-  "rescue_command_timeout_seconds": 420, // timeout for rescue-mode commands
-  "rescue_command_prefix": "/codex", // command prefix watched in Telegram
-  "recovery_log": "~/.openclaw/workspace/memory/recovery-log.md", // markdown journal
-  "state_file": "/tmp/openclaw-watchdog-state", // runtime incident state
-  "lock_file": "/tmp/openclaw-watchdog.lock", // overlapping-run lock
-  "codex_model": "gpt-5.3-codex", // model for Codex repairs
-  "codex_bin": "", // explicit path to codex (auto-detected if empty)
-  "claude_bin": "" // explicit path to claude (auto-detected if empty)
-}
-```
-
-### Common tweaks
-
-- **Faster alerting**: set `"max_failures": 1` to trigger after a single failed check (~5 min)
-- **More repair attempts**: bump `"max_repairs_per_incident": 5`
-- **Use Claude Code instead of Codex**: install it and leave `codex_bin`/`claude_bin` empty — the watchdog auto-detects whichever is available (prefers Codex, falls back to Claude)
-
----
-
-## Why Telegram?
-
-The watchdog needs to reach you when OpenClaw is down. WhatsApp, Discord, iMessage, Signal, and Slack traffic normally routes through the OpenClaw gateway — the thing that's broken. This watchdog calls Telegram Bot API directly at `https://api.telegram.org`, so alerts and rescue commands still work during gateway outages.
-
-If you don't use Telegram, the watchdog still auto-repairs. You just won't get alerts.
-
----
-
-## Gotchas
-
-- **On macOS, the launchd template uses both `StartInterval` and `StartCalendarInterval` (every 5 minutes) for timer reliability.**
-- **The bot token goes in your environment**, not in `watchdog.json`. The config stores the *name* of the env var (default: `TELEGRAM_BOT_TOKEN_AVA`). Put the actual token in `~/.openclaw/.env` or your shell profile.
-- **Rescue mode only listens to your chat ID.** Other users messaging the bot won't trigger commands.
-- **Cooldown is 30 minutes by default.** If a repair fails, the watchdog waits before trying again. This prevents a broken agent from making things worse in a loop.
-- **Recovery logs are permanent.** Every repair attempt is logged to `~/.openclaw/workspace/memory/recovery-log.md` so your OpenClaw agent can learn from past incidents.
-
----
+Coding standards:
+- Use JSON state/config updates through `jq`.
+- Use atomic writes (`tmp` + `mv`) for mutable files.
+- Never `source` writable state files.
+- Keep deterministic recovery tiers before LLM escalation.
 
 ## Uninstall
 
 ```bash
 # keep config
-bash uninstall.sh
+./uninstall.sh
 
-# remove config too
-bash uninstall.sh --purge
+# also remove ~/.openclaw/sentinel.json
+./uninstall.sh --purge
 ```
-
-Or clone the repo and run `./uninstall.sh` if you used the one-liner install.
-
----
-
-## 🤖 For Agents
-
-> This section is for OpenClaw agents operating this watchdog autonomously. Humans: you can skip this.
-
-### Install (non-interactive)
-
-```bash
-# OpenClaw prerequisite (official installer)
-curl -fsSL https://openclaw.ai/install.sh | bash
-
-# Watchdog install
-OPENCLAW_WATCHDOG_CHAT_ID="${TELEGRAM_CHAT_ID}" \
-  curl -fsSL https://raw.githubusercontent.com/bkochavy/openclaw-watchdog/main/install.sh | bash
-```
-
-Verify install:
-```bash
-bash ~/.openclaw/bin/watchdog.sh  # exit 0 = working, exit 1 = config/dep error
-```
-
-### Status checks
-
-```bash
-# macOS
-launchctl list | grep watchdog
-
-# Linux
-systemctl --user status openclaw-watchdog.timer
-
-# Both platforms
-STATE_FILE="$(jq -r '.state_file // \"/tmp/openclaw-watchdog-state\"' ~/.openclaw/watchdog.json)"
-STATE_FILE="${STATE_FILE/#\~/$HOME}"
-cat "$STATE_FILE"                       # current failure count + repair state
-tail -50 ~/.openclaw/logs/watchdog.log  # recent activity
-```
-
-### Operations
-
-| Action | Command |
-|---|---|
-| Trigger manual repair cycle | `bash ~/.openclaw/bin/watchdog.sh` |
-| Reset incident state | `STATE_FILE="$(jq -r '.state_file // "/tmp/openclaw-watchdog-state"' ~/.openclaw/watchdog.json)"; rm -f "${STATE_FILE/#\~/$HOME}"` |
-| Edit thresholds/timeouts | edit `~/.openclaw/watchdog.json` |
-| Check if repair is running | `LOCK_FILE="$(jq -r '.lock_file // "/tmp/openclaw-watchdog.lock"' ~/.openclaw/watchdog.json)"; LOCK_FILE="${LOCK_FILE/#\~/$HOME}"; [ -f "$LOCK_FILE" ] && kill -0 "$(cat "$LOCK_FILE")" 2>/dev/null && echo running \|\| echo idle` |
-| Send test Telegram alert | `source ~/.openclaw/bin/tg-helper.sh && TOKEN_ENV="$(jq -r '.telegram_bot_token_env // "TELEGRAM_BOT_TOKEN_AVA"' ~/.openclaw/watchdog.json)" && TG_TOKEN="$(printenv "$TOKEN_ENV")" TG_CHAT="<id>" tg_send "test"` |
-| Force rescue mode | set `"max_repairs_per_incident": 0` in config, then run watchdog |
-| View recovery history | `cat ~/.openclaw/workspace/memory/recovery-log.md` |
-
-### Exit codes
-
-- `0` — normal (healthy, waiting, repairing, rescue polling, or skipped due to lock)
-- `1` — config or dependency error (e.g., config exists but `jq` missing)
-
-### File paths
-
-| File | Path |
-|---|---|
-| Config | `~/.openclaw/watchdog.json` |
-| OpenClaw core config | `~/.openclaw/openclaw.json` |
-| Main script | `~/.openclaw/bin/watchdog.sh` |
-| Telegram helper | `~/.openclaw/bin/tg-helper.sh` |
-| Runtime TG helper | `${TMPDIR:-/tmp}/openclaw-tg-helper.sh` |
-| Logs | `~/.openclaw/logs/watchdog.log` |
-| Repair logs | `~/.openclaw/logs/watchdog-codex-attempt-*.log` |
-| Recovery journal | `~/.openclaw/workspace/memory/recovery-log.md` |
-| State file | `/tmp/openclaw-watchdog-state` (default, configurable) |
-| Lock file | `/tmp/openclaw-watchdog.lock` (default, configurable) |
-
----
-
-Built for the [OpenClaw](https://openclaw.ai) community. MIT licensed.
