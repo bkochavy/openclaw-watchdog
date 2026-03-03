@@ -1,11 +1,11 @@
 [Unit]
-Description=Run OpenClaw watchdog every 5 minutes
+Description=Run OpenClaw sentinel every 5 minutes
 
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=5min
 AccuracySec=30s
-Unit=openclaw-watchdog.service
+Unit=openclaw-sentinel.service
 Persistent=true
 
 [Install]

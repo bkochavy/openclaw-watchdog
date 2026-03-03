@@ -1,0 +1,49 @@
+{
+  "health_url": "http://127.0.0.1:18789/healthz",
+  "check_interval_seconds": 300,
+  "recovery": {
+    "max_failures_before_action": 2,
+    "cooldown_seconds": 1800,
+    "max_repairs_per_incident": 3,
+    "deterministic_restart_enabled": true,
+    "deterministic_doctor_enabled": true,
+    "config_rollback_enabled": true,
+    "codex_timeout_seconds": 180,
+    "rescue_timeout_seconds": 420,
+    "rescue_command_prefix": "/codex",
+    "codex_model": "gpt-5.3-codex",
+    "codex_bin": "",
+    "claude_bin": ""
+  },
+  "backup": {
+    "enabled": true,
+    "schedule": "04:00",
+    "system_backup_dir": "~/backups/openclaw-system",
+    "memory_backup_dir": "~/backups/openclaw-memory",
+    "github_repo": "",
+    "github_user": "",
+    "include_skills": true,
+    "include_scripts": true,
+    "include_launchd": true,
+    "include_agents": true,
+    "redact_env_values": true,
+    "max_backup_age_hours": 30,
+    "critical_files": [
+      "openclaw/openclaw.json",
+      "workspace-config/AGENTS.md",
+      "workspace-config/SOUL.md"
+    ]
+  },
+  "notifications": {
+    "telegram_bot_token_env": "TELEGRAM_BOT_TOKEN_AVA",
+    "telegram_chat_id": "",
+    "discord_webhook_url": "",
+    "notify_on_recovery": true,
+    "notify_on_backup_failure": true,
+    "notify_on_backup_success": false
+  },
+  "state_file": "~/.openclaw/state/sentinel-state.json",
+  "lock_file": "~/.openclaw/state/sentinel.lock",
+  "recovery_log": "~/.openclaw/workspace/memory/recovery-log.md",
+  "log_dir": "~/.openclaw/logs"
+}

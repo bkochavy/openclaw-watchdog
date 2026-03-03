@@ -1,5 +1,5 @@
 [Unit]
-Description=OpenClaw gateway emergency recovery watchdog
+Description=OpenClaw sentinel unified watchdog and backup service
 Wants=network-online.target
 After=network-online.target
 
@@ -7,4 +7,4 @@ After=network-online.target
 Type=oneshot
 Environment=HOME=%h
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/.openclaw/bin/watchdog.sh
+ExecStart=%h/.openclaw/bin/sentinel.sh
