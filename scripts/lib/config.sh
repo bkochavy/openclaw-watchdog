@@ -5,7 +5,7 @@ sentinel_expand_path() {
   local raw="${1:-}"
   case "$raw" in
     "~") printf '%s\n' "$HOME" ;;
-    ~/*) printf '%s\n' "$HOME/${raw#~/}" ;;
+    "~/"*) printf '%s\n' "$HOME/${raw#\~/}" ;;
     *) printf '%s\n' "$raw" ;;
   esac
 }
@@ -163,7 +163,7 @@ sentinel_config_get_int() {
 
 sentinel_config_get_bool() {
   local filter="$1" fallback="$2" value
-  value="$(jq -r "$filter // empty" <<<"$SENTINEL_CONFIG_JSON" 2>/dev/null || true)"
+  value="$(jq -r "$filter | if type == \"boolean\" then tostring else empty end" <<<"$SENTINEL_CONFIG_JSON" 2>/dev/null || true)"
   case "$value" in true|false) printf '%s\n' "$value" ;; *) printf '%s\n' "$fallback" ;; esac
 }
 
