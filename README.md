@@ -182,7 +182,7 @@ cat ~/.openclaw/sentinel.json
 ```bash
 ./install.sh --check
 ```
-4. Confirm old watchdog/backup timers are unloaded (installer handles this automatically).
+4. Confirm old watchdog/backup timers are unloaded (installer handles this automatically). On macOS, the installer also strips a stale `StartCalendarInterval` block from the legacy watchdog plist so duplicate launches do not survive migration.
 
 `sentinel_config_load` behavior:
 - Uses `sentinel.json` when present

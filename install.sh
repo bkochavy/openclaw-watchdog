@@ -124,9 +124,20 @@ install_scripts() {
   install -m 0755 "$SCRIPT_DIR/scripts/lib/tg-helper.sh" "$BIN_DIR/tg-helper.sh"
 }
 
+unload_legacy_watchdog_launchd_plist() {
+  local plist="$HOME/Library/LaunchAgents/ai.openclaw.watchdog.plist"
+  [ -f "$plist" ] || return 0
+
+  if rg -q "<key>StartInterval</key>" "$plist" && rg -q "<key>StartCalendarInterval</key>" "$plist"; then
+    perl -0pi -e 's/\n\s*<key>StartCalendarInterval<\/key>\n\s*<array>.*?<\/array>//s' "$plist"
+    log "install: removed duplicate StartCalendarInterval from legacy watchdog plist"
+  fi
+}
+
 unload_legacy_services() {
   case "$(uname -s)" in
     Darwin)
+      unload_legacy_watchdog_launchd_plist
       launchctl bootout "gui/$UID" "$HOME/Library/LaunchAgents/ai.openclaw.watchdog.plist" >/dev/null 2>&1 || true
       launchctl bootout "gui/$UID" "$HOME/Library/LaunchAgents/ai.openclaw.sentinel.plist" >/dev/null 2>&1 || true
       ;;
